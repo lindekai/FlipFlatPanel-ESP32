@@ -17,16 +17,31 @@ static constexpr uint8_t AP_MAX_CLIENTS = 4;
 static constexpr int NETWORK_SCAN_MAX_RESULTS = 16;
 static constexpr unsigned long NETWORK_SCAN_CACHE_MS = 300000;
 static constexpr uint32_t NETWORK_SCAN_MAX_MS_PER_CHAN = 45;
+static constexpr unsigned long WIFI_CHECK_INTERVAL_MS = 5000;
+static constexpr unsigned long WIFI_RECONNECT_INTERVAL_MS = 10000;
+static constexpr unsigned long WIFI_AP_FALLBACK_MS = 45000;
+static constexpr wifi_power_t WIFI_STA_TX_POWER = WIFI_POWER_11dBm;
+static constexpr wifi_power_t WIFI_AP_SCAN_TX_POWER = WIFI_POWER_8_5dBm;
 static IPAddress apIP(192, 168, 4, 1);
 static String currentApSsid;
 static String networkScanJson = "[]";
 static String networkScanOptions;
 static String networkScanError = "";
+static String configuredSsid;
+static String configuredPassword;
 static bool networkScanRunning = false;
 static bool networkScanRequested = false;
 static bool networkScanForceRefresh = false;
 static unsigned long networkScanRequestedMs = 0;
 static unsigned long lastNetworkScanMs = 0;
+static unsigned long lastWiFiCheckMs = 0;
+static unsigned long wifiDisconnectedSinceMs = 0;
+static unsigned long lastReconnectAttemptMs = 0;
+static bool stationWasConnected = false;
+
+static void setWiFiTxPower(wifi_power_t power) {
+    WiFi.setTxPower(power);
+}
 
 static bool isAccessPointActive() {
     return WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA;
@@ -45,6 +60,7 @@ static bool connectStation(const String& ssid, const String& password, uint32_t 
     const bool keepAccessPoint = isAccessPointActive();
     WiFi.setHostname(DEVICE_NAME);
     WiFi.mode(keepAccessPoint ? WIFI_AP_STA : WIFI_STA);
+    setWiFiTxPower(WIFI_STA_TX_POWER);
     WiFi.disconnect(false, false);
     delay(150);
 
@@ -189,7 +205,8 @@ static void handleNetworkScan() {
     }
 
     WiFi.scanDelete();
-    const int result = WiFi.scanNetworks(true, true);
+    setWiFiTxPower(WIFI_AP_SCAN_TX_POWER);
+    const int result = WiFi.scanNetworks(true, true, true, NETWORK_SCAN_MAX_MS_PER_CHAN);
     if (result == -1) {
         networkScanRunning = true;
         networkScanRequested = false;
@@ -759,7 +776,9 @@ function servoPreview(v){setText('servoPulseText',v+' us');setText('servoPulseTi
 function fmt(v,d,u){return Number.isFinite(v)?Number(v).toFixed(d)+u:'-'}function coverLabel(v){v=String(v||'').toLowerCase();if(v==='offen'||v==='open')return tr('coverOpen');if(v==='geschlossen'||v==='closed')return tr('coverClosed');if(v==='moving'||v==='bewegt')return tr('coverMoving');if(v==='error'||v==='fehler')return tr('coverError');return tr('coverUnknown')}function setSystem(id,state,label){var dot=el(id+'Dot');if(dot)dot.className='dot '+state;setText(id,label)}
 function updateSystemStatus(d){setSystem('sysAlpaca','ok',tr('httpOk'));if(d.networkConnected){var r=Number.isFinite(d.networkRssi)?' · '+d.networkRssi+' dBm':'';setSystem('sysNetwork','ok',(d.networkSsid||tr('wlan'))+' · '+(d.networkIp||'-')+r)}else if(d.accessPointActive){setSystem('sysNetwork','pending',tr('setupHotspotState')+' · '+(d.accessPointIp||'192.168.4.1'))}else setSystem('sysNetwork','bad',tr('noConnection'));setSystem('sysBme',d.bmeAvailable?'ok':'bad',d.bmeAvailable?'OK':tr('missing'));setSystem('sysOta',d.otaReady?'ok':'bad',d.otaReady?tr('ready'):tr('notReady'));if(d.heaterManualMode)setSystem('sysHeater',d.heaterOn?'ok':'pending',d.heaterOn?tr('manualOnState'):tr('manualOffState'));else setSystem('sysHeater',d.heaterEnabled?'ok':'pending',d.heaterEnabled?tr('dewAutomation'):tr('automationOff'))}
 function refresh(){xhr('GET','/api/v1/flatpanel/environment?ts='+(new Date().getTime()),'',function(x){try{var d=JSON.parse(x.responseText);updateSystemStatus(d);var c=coverLabel(d.coverStateText);setText('coverState',c);setText('coverState2',c);setText('lightState',d.brightness>0?tr('isOn'):tr('isOff'));setText('brightnessText',val(d.brightness,0));if(document.activeElement!==el('brightness'))el('brightness').value=val(d.brightness,0);servoMinUs=val(d.servoMinUs,servoMinUs);servoMaxUs=val(d.servoMaxUs,servoMaxUs);servoOpenUs=val(d.servoOpenUs,servoOpenUs);servoCloseUs=val(d.servoCloseUs,servoCloseUs);servoPulseUs=val(d.servoPulseUs,servoPulseUs);el('servoPulse').min=servoMinUs;el('servoPulse').max=servoMaxUs;if(document.activeElement!==el('servoPulse'))el('servoPulse').value=servoPulseUs;servoPreview(el('servoPulse').value);if(el('servoSmooth'))el('servoSmooth').checked=!!d.servoSmoothEnabled;servoSpeedMin=val(d.servoSpeedMinUsPerSec,servoSpeedMin);servoSpeedMax=val(d.servoSpeedMaxUsPerSec,servoSpeedMax);servoSpeed=val(d.servoMaxSpeedUsPerSec,servoSpeed);el('servoSpeed').min=servoSpeedMin;el('servoSpeed').max=servoSpeedMax;if(document.activeElement!==el('servoSpeed'))el('servoSpeed').value=servoSpeed;servoSpeedPreview(el('servoSpeed').value);setText('heaterState',d.heaterOn?tr('isOn'):tr('isOff'));setText('heaterOutput',d.heaterOn?tr('isOn'):tr('isOff'));setText('heaterMode',d.heaterManualMode?tr('manual'):tr('dewPointMode'));setText('heaterAuto',d.heaterEnabled?tr('isOn'):tr('isOff'));setText('bmeState',d.bmeAvailable?'OK':tr('missing'));setText('temp',fmt(d.temperatureC,1,' °C'));setText('hum',fmt(d.humidityPct,1,' %'));setText('pres',fmt(d.pressureHpa,1,' hPa'));setText('dew',fmt(d.dewPointC,1,' °C'));setText('mappedPos',Number.isFinite(d.mappedPosition)?d.mappedPosition+' %':'-');setText('mappedPos2',Number.isFinite(d.mappedPosition)?d.mappedPosition+' %':'-');setText('rawPos',val(d.rawPosition,'-'));setText('filteredPos',val(d.filteredPosition,'-'));setText('openRaw',val(d.calibrationOpenRaw,'-'));setText('closedRaw',val(d.calibrationClosedRaw,'-'));setText('openServo',Number.isFinite(d.calibrationOpenServoUs)?d.calibrationOpenServoUs+' us':'-');setText('closedServo',Number.isFinite(d.calibrationClosedServoUs)?d.calibrationClosedServoUs+' us':'-')}catch(e){setSystem('sysAlpaca','bad',tr('unreachable'))}})}
-function loadLogs(){xhr('GET','/monitor/log?ts='+(new Date().getTime()),'',function(x){setText('monitorLog',x.status===200?(x.responseText||tr('logEmpty')):tr('logUnavailable'))})}function clearLogs(){xhr('POST','/monitor/log/clear','',function(){loadLogs()})}function updateNetworkMode(){var d=el('networkDetails');if(d&&d.open)document.body.className='network-active';else document.body.className=''}
+function loadLogs(){xhr('GET','/monitor/log?ts='+(new Date().getTime()),'',function(x){setText('monitorLog',x.status===200?(x.responseText||tr('logEmpty')):tr('logUnavailable'))})}function clearLogs(){xhr('POST','/monitor/log/clear','',function(){loadLogs()})}
+var networkScanLoaded=false;function loadNetworks(){var s=el('networks');if(!s)return;if(networkScanLoaded)return;networkScanLoaded=true;s.innerHTML='<option value="">Suche läuft...</option>';xhr('GET','/setup/networks?refresh=1&ts='+(new Date().getTime()),'',function(x){try{var d=JSON.parse(x.responseText),list=d.networks||[];s.innerHTML='<option value="">'+tr('selectNetwork')+'</option>';for(var i=0;i<list.length;i++){var o=document.createElement('option');o.value=list[i].ssid;o.textContent=list[i].ssid+' ('+list[i].rssi+' dBm)';s.appendChild(o)}if(!list.length&&(d.scanning||d.requested)){networkScanLoaded=false;setTimeout(loadNetworks,1200)}else if(!list.length){s.innerHTML='<option value="">'+tr('manualOrScan')+'</option>'}}catch(e){s.innerHTML='<option value="">'+tr('manualOrScan')+'</option>'}})}
+function updateNetworkMode(){var d=el('networkDetails');if(d&&d.open){document.body.className='network-active';loadNetworks()}else document.body.className=''}
 var nd=el('networkDetails');if(nd)nd.addEventListener('toggle',updateNetworkMode);var ld=el('logDetails');if(ld)ld.addEventListener('toggle',function(){if(ld.open)loadLogs()});applyLanguage();updateNetworkMode();setTimeout(refresh,400);
 )rawliteral";
 
@@ -793,7 +812,8 @@ static void startAccessPoint() {
     for (int attempt = 0; attempt < 5 && !apStarted; ++attempt) {
         Monitor::print("[WiFi] AP Versuch ");
         Monitor::println(attempt + 1);
-        WiFi.mode(WIFI_AP_STA);
+        WiFi.mode(WIFI_AP);
+        setWiFiTxPower(WIFI_AP_SCAN_TX_POWER);
         delay(300);
         const bool apConfigOk = WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
         apStarted = apConfigOk && WiFi.softAP(currentApSsid.c_str(), AP_PASSWORD, AP_CHANNEL, false, AP_MAX_CLIENTS);
@@ -819,13 +839,62 @@ static void startAccessPoint() {
     }
 }
 
+
+static void maintainStationConnection() {
+    if (configuredSsid.isEmpty() || isAccessPointActive()) return;
+
+    const unsigned long now = millis();
+    if (now - lastWiFiCheckMs < WIFI_CHECK_INTERVAL_MS) return;
+    lastWiFiCheckMs = now;
+
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!stationWasConnected) {
+            Monitor::print("[WiFi] Verbindung wiederhergestellt, IP: ");
+            Monitor::println(WiFi.localIP());
+        }
+        stationWasConnected = true;
+        wifiDisconnectedSinceMs = 0;
+        return;
+    }
+
+    if (wifiDisconnectedSinceMs == 0) {
+        wifiDisconnectedSinceMs = now;
+        Monitor::print("[WiFi] Verbindung verloren, Status=");
+        Monitor::println(static_cast<int>(WiFi.status()));
+    }
+    stationWasConnected = false;
+
+    if (now - wifiDisconnectedSinceMs >= WIFI_AP_FALLBACK_MS) {
+        Monitor::println("[WiFi] Reconnect erfolglos -> starte Setup AP");
+        WiFi.disconnect(true, true);
+        delay(200);
+        WiFi.setHostname(DEVICE_NAME);
+        startAccessPoint();
+        return;
+    }
+
+    if (now - lastReconnectAttemptMs >= WIFI_RECONNECT_INTERVAL_MS) {
+        lastReconnectAttemptMs = now;
+        Monitor::print("[WiFi] Reconnect zu SSID: ");
+        Monitor::println(configuredSsid);
+        WiFi.disconnect(false, false);
+        delay(100);
+        WiFi.mode(WIFI_STA);
+        setWiFiTxPower(WIFI_STA_TX_POWER);
+        WiFi.setHostname(DEVICE_NAME);
+        WiFi.begin(configuredSsid.c_str(), configuredPassword.c_str());
+    }
+}
+
 void initWiFi() {
     Monitor::println("\n[WiFi] Init...");
 
     preferences.begin("wifi_config", false);
 
-    const String savedSsid = preferences.isKey("ssid") ? preferences.getString("ssid", "") : "";
-    const String savedPassword = preferences.isKey("password") ? preferences.getString("password", "") : "";
+    configuredSsid = preferences.isKey("ssid") ? preferences.getString("ssid", "") : "";
+    configuredPassword = preferences.isKey("password") ? preferences.getString("password", "") : "";
+    const String savedSsid = configuredSsid;
+    const String savedPassword = configuredPassword;
 
     WiFi.persistent(false);
     WiFi.setSleep(false);
@@ -836,14 +905,12 @@ void initWiFi() {
     if (savedSsid.isEmpty()) {
         Monitor::println("[WiFi] Keine gespeicherte SSID -> starte Setup AP");
         WiFi.setHostname(DEVICE_NAME);
-        primeNetworkScanCache();
         startAccessPoint();
         return;
     }
 
-    primeNetworkScanCache();
-
     WiFi.mode(WIFI_STA);
+    setWiFiTxPower(WIFI_STA_TX_POWER);
     WiFi.setHostname(DEVICE_NAME);
 
     Monitor::print("[WiFi] Verbinde mit gespeicherter SSID: ");
@@ -852,13 +919,15 @@ void initWiFi() {
     WiFi.begin(savedSsid.c_str(), savedPassword.c_str());
 
     unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
         Monitor::print(".");
         delay(500);
     }
     Monitor::println();
 
     if (WiFi.status() == WL_CONNECTED) {
+        stationWasConnected = true;
+        wifiDisconnectedSinceMs = 0;
         Monitor::println("[WiFi] Verbunden!");
         Monitor::print("[WiFi] IP: ");
         Monitor::println(WiFi.localIP());
@@ -870,6 +939,7 @@ void initWiFi() {
 }
 
 void processDNS() {
+    maintainStationConnection();
     handleNetworkScan();
     if (isAccessPointActive()) {
         dnsServer.processNextRequest();
@@ -954,6 +1024,10 @@ void setupWiFiEndpoints(AsyncWebServer& server) {
 
         preferences.putString("ssid", ssid);
         preferences.putString("password", password);
+        configuredSsid = ssid;
+        configuredPassword = password;
+        stationWasConnected = true;
+        wifiDisconnectedSinceMs = 0;
         String html = "<html><body><h2>WLAN verbunden</h2><p>Gespeichert. IP: ";
         html += WiFi.localIP().toString();
         html += "</p><p>Der Setup-Hotspot wird jetzt beendet.</p><p>Setup danach: <a href='http://";
@@ -968,6 +1042,10 @@ void setupWiFiEndpoints(AsyncWebServer& server) {
     server.on("/setup/reset", HTTP_POST, [](AsyncWebServerRequest* request) {
         preferences.remove("ssid");
         preferences.remove("password");
+        configuredSsid = "";
+        configuredPassword = "";
+        stationWasConnected = false;
+        wifiDisconnectedSinceMs = 0;
         if (!isAccessPointActive()) startAccessPoint();
         request->send(200, "text/html; charset=utf-8", "<html><body><h2>WLAN geloescht</h2><p>Der Setup-Hotspot bleibt aktiv.</p><p><a href='/setup?portal=1'>Zurueck zum Setup</a></p></body></html>");
     });
